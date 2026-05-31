@@ -9,7 +9,7 @@ The service runs as a long-lived process that:
 - Maintains an in-memory rolling history of readings
 - Exposes current and historical metrics via HTTP endpoints in JSON format
 
-It is configurable via a TOML file and includes a systemd unit file for production deployment.
+It is configurable via a TOML file and can be run as either a foreground process or a managed background service.
 
 ## Requirements
 
@@ -192,7 +192,7 @@ Returns statistics for a specific network interface. The `{interface}` path para
     content-length: 0
     date: Sun, 31 May 2026 10:44:56 GMT
 
-    ### `GET /api/history?minutes=N`
+### `GET /api/history?minutes=N`
 
 Returns historical snapshots from the in-memory ring buffer. A background task records a snapshot every `poll_interval_seconds` (configured in `config.toml`); entries older than `history_retention_seconds` are dropped automatically.
 
@@ -242,6 +242,7 @@ Returns historical snapshots from the in-memory ring buffer. A background task r
 ## Architecture
 
 The service is structured around two concurrent components sharing a single piece of in-memory state:
+```
                     ┌────────────────────┐
                     │  Shared History    │
                     │  Arc<Mutex<Vec<T>>>│
@@ -262,6 +263,7 @@ The service is structured around two concurrent components sharing a single piec
  │  /proc and /sys  │
  │  filesystems     │
  └──────────────────┘
+```
 
  - **Background collector** — a `tokio::spawn` task that wakes every `poll_interval_seconds`, reads system data from `/proc` and `/sys`, and appends a timestamped entry to the shared history buffer. Old entries beyond `history_retention_seconds` are dropped on each tick.
 
@@ -272,36 +274,14 @@ System-reading logic is factored into a single `collect_snapshot()` function use
 
 ## Production Considerations
 
-This service is functional but intentionally minimal. The following are improvements that would be required (or recommended) before a real production deployment:
+This service is functional but minimal. The following are the main improvements that would be needed before a real production deployment:
 
-### Reliability
-
-- **Replace `.unwrap()` and `.expect()` with graceful error handling.** The current code panics on unexpected conditions (missing files, parse errors). In production, parsing errors on individual `/proc` reads should be logged and returned as `null` or partial responses rather than crashing the service.
-- **Add a `tokio::sync::RwLock` instead of `std::sync::Mutex` for the history buffer.** This would allow multiple concurrent readers (HTTP handlers) without blocking each other, while still serializing writes.
-- **Handle the case where the configured `primary_interface` does not exist.** Currently the field is read but never validated against actual interfaces; an invalid name silently results in `is_primary: false` for everything.
-
-### Security
-
-- **Run as a non-privileged user.** The included systemd unit file already runs the service as a dedicated `monitor` user with hardening directives (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`).
-- **Restrict network exposure.** Binding to `0.0.0.0` exposes the service on all interfaces. In production this should bind to a private interface or be placed behind a reverse proxy with authentication.
-- **Add authentication.** The current API is open to anyone who can reach the listening port. A real deployment should require an API token, mutual TLS, or live on a trusted internal network.
-
-### Observability
-
-- **Structured logging.** Replace ad-hoc `println!` calls with a proper logging framework (e.g. the `tracing` crate) supporting log levels, structured fields, and machine-parseable output.
-- **Metrics endpoint.** Expose service-internal metrics (collector tick latency, buffer size, failed reads) at a `/metrics` endpoint in Prometheus format so the monitor itself can be monitored.
-- **Health beyond `/api/health`.** The current health endpoint only confirms the HTTP listener is up. A production-grade liveness check would also verify the collector has produced a recent snapshot.
-
-### Resource management
-
-- **Bound CPU sampling cost.** Each `/api/system` request currently spends 1 second sampling `/proc/stat`. Under heavy load this is wasteful; the collector already produces snapshots, so `/api/system` could return the most recent buffered entry instead of re-sampling.
-- **Configurable history size limit.** History retention is currently time-based (`history_retention_seconds`). A defensive maximum entry count would protect against memory growth if `poll_interval_seconds` is set very low.
-
-### Testing
-
-- **Integration tests** that spin up the server and verify HTTP responses end-to-end.
-- **Tests against captured `/proc` fixtures** to verify parsing handles real-world variations (different kernel versions, missing fields, etc.).
-- **Load testing** to characterize behavior under sustained request volume.
+- **Replace `.unwrap()` and `.expect()` calls** with graceful error handling. The current code panics on unexpected conditions; in production these should be logged and returned as partial responses.
+- **Validate `primary_interface` at startup.** The configured name is currently never checked against actual interfaces — an invalid name silently results in `is_primary: false` for everything.
+- **Restrict network exposure and add authentication.** Binding to `0.0.0.0` exposes the service on all interfaces. A real deployment should bind to a private interface, sit behind a reverse proxy, or require an API token.
+- **Structured logging.** Replace `println!` calls with the `tracing` crate for log levels, structured fields, and machine-parseable output.
+- **`/api/system` could read from the buffer.** It currently spends 1 second re-sampling `/proc/stat`; since the collector already produces snapshots, the endpoint could return the most recent buffered entry instead.
+- **Process supervision.** Run the service under a process manager (systemd, supervisord, or similar) so it restarts automatically on crash and starts at boot.
 
 ## Project Structure
 
@@ -309,7 +289,6 @@ This service is functional but intentionally minimal. The following are improvem
     ├── Cargo.toml                 # Dependencies and build configuration
     ├── Cargo.lock                 # Locked dependency versions
     ├── config.toml                # Example service configuration
-    ├── system-monitor.service     # systemd unit file for production deployment
     ├── README.md                  # This file
     ├── .gitignore                 # Excludes /target and IDE files
     └── src/

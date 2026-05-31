@@ -1,0 +1,21 @@
+[Unit]
+Description=System Monitor Service
+Documentation=https://github.com/abdullahalhajlah/system-monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/system-monitor --config /etc/system-monitor/config.toml
+Restart=on-failure
+RestartSec=5
+User=monitor
+Group=monitor
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

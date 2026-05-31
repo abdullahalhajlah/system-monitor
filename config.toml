@@ -1,0 +1,4 @@
+listen_address = "0.0.0.0:8080"
+poll_interval_seconds = 10
+primary_interface = "eth0"
+history_retention_seconds = 3600

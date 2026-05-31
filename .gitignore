@@ -1,0 +1,10 @@
+/target
+
+# IDE / OS junk
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Environment files 
+.env
